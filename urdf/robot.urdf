@@ -2,6 +2,35 @@
 <!-- Generated using onshape-to-robot -->
 <!-- Onshape https://cad.onshape.com/documents/94b6ca4043d8b7dadf18169a/w/f21a9ff9413a5e9f1a679a27/e/2a732876cea761500fc01163 -->
 <robot name="Bot1">
+  <link name="world"/>
+  <link name="floor">
+    <visual>
+        <origin xyz="0 0 -0.05" rpy="0 0 0"/>
+        <geometry>
+            <box size="10 10 0.1"/>
+        </geometry>
+        <material name="grid">
+            <color rgba="0.8 0.9 0.8 1"/>
+        </material>
+    </visual>
+    <collision>
+        <origin xyz="0 0 -0.05" rpy="0 0 0"/>
+        <geometry>
+            <box size="10 10 0.1"/>
+        </geometry>
+    </collision>
+  </link>
+  <joint name="world_to_floor" type="fixed">
+    <parent link="world"/>
+    <child link="floor"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <joint name="floor_to_base" type="floating">
+    <parent link="floor"/>
+    <child link="part_1"/>
+    <origin xyz="0 0 0.5" rpy="0 0 0"/> <!-- Lift robot up by 0.5m -->
+  </joint>
+
   <!-- Link part_1 -->
   <link name="part_1">
     <inertial>
@@ -13,7 +42,7 @@
     <visual>
       <origin xyz="-0.0290399 -0.0153501 0.0106225" rpy="1.04355e-07 -4.04659e-09 2.7083e-08"/>
       <geometry>
-        <mesh filename="package://assets/part_1.stl"/>
+        <mesh filename="part_1.stl"/>
       </geometry>
       <material name="part_1_material">
         <color rgba="0.25098 0.25098 0.25098 1"/>
@@ -22,7 +51,7 @@
     <collision>
       <origin xyz="-0.0290399 -0.0153501 0.0106225" rpy="1.04355e-07 -4.04659e-09 2.7083e-08"/>
       <geometry>
-        <mesh filename="package://assets/part_1.stl"/>
+        <mesh filename="part_1.stl"/>
       </geometry>
     </collision>
   </link>
@@ -37,7 +66,7 @@
     <visual>
       <origin xyz="-0.595484 -1.2957 0.863499" rpy="3.14159 -7.06969e-15 1.02625e-16"/>
       <geometry>
-        <mesh filename="package://assets/part_1__2.stl"/>
+        <mesh filename="part_1__2.stl"/>
       </geometry>
       <material name="part_1_2_material">
         <color rgba="0.25098 0.25098 0.25098 1"/>
@@ -46,7 +75,7 @@
     <collision>
       <origin xyz="-0.595484 -1.2957 0.863499" rpy="3.14159 -7.06969e-15 1.02625e-16"/>
       <geometry>
-        <mesh filename="package://assets/part_1__2.stl"/>
+        <mesh filename="part_1__2.stl"/>
       </geometry>
     </collision>
   </link>
@@ -61,7 +90,7 @@
     <visual>
       <origin xyz="-0.600864 0.882908 1.34578" rpy="3.14159 -6.17975e-17 -5.06224e-17"/>
       <geometry>
-        <mesh filename="package://assets/part_1__3.stl"/>
+        <mesh filename="part_1__3.stl"/>
       </geometry>
       <material name="part_1_3_material">
         <color rgba="0.25098 0.25098 0.25098 1"/>
@@ -70,7 +99,7 @@
     <collision>
       <origin xyz="-0.600864 0.882908 1.34578" rpy="3.14159 -6.17975e-17 -5.06224e-17"/>
       <geometry>
-        <mesh filename="package://assets/part_1__3.stl"/>
+        <mesh filename="part_1__3.stl"/>
       </geometry>
     </collision>
   </link>
@@ -85,7 +114,7 @@
     <visual>
       <origin xyz="-2.77556e-17 -1.38778e-16 -0.004" rpy="3.75243e-15 -7.93323e-17 -1.93732"/>
       <geometry>
-        <mesh filename="package://assets/part_1__4.stl"/>
+        <mesh filename="part_1__4.stl"/>
       </geometry>
       <material name="part_1_4_material">
         <color rgba="0.25098 0.25098 0.25098 1"/>
@@ -94,7 +123,7 @@
     <collision>
       <origin xyz="-2.77556e-17 -1.38778e-16 -0.004" rpy="3.75243e-15 -7.93323e-17 -1.93732"/>
       <geometry>
-        <mesh filename="package://assets/part_1__4.stl"/>
+        <mesh filename="part_1__4.stl"/>
       </geometry>
     </collision>
   </link>
@@ -133,7 +162,7 @@
     <visual>
       <origin xyz="-0.595484 -1.2957 0.863499" rpy="3.14159 -6.99933e-15 -3.33598e-17"/>
       <geometry>
-        <mesh filename="package://assets/part_1__2.stl"/>
+        <mesh filename="part_1__2.stl"/>
       </geometry>
       <material name="part_1_5_material">
         <color rgba="0.25098 0.25098 0.25098 1"/>
@@ -142,7 +171,7 @@
     <collision>
       <origin xyz="-0.595484 -1.2957 0.863499" rpy="3.14159 -6.99933e-15 -3.33598e-17"/>
       <geometry>
-        <mesh filename="package://assets/part_1__2.stl"/>
+        <mesh filename="part_1__2.stl"/>
       </geometry>
     </collision>
   </link>
@@ -157,7 +186,7 @@
     <visual>
       <origin xyz="-0.600864 0.882908 1.34578" rpy="3.14159 9.14324e-18 -6.1058e-18"/>
       <geometry>
-        <mesh filename="package://assets/part_1__3.stl"/>
+        <mesh filename="part_1__3.stl"/>
       </geometry>
       <material name="part_1_6_material">
         <color rgba="0.25098 0.25098 0.25098 1"/>
@@ -166,7 +195,7 @@
     <collision>
       <origin xyz="-0.600864 0.882908 1.34578" rpy="3.14159 9.14324e-18 -6.1058e-18"/>
       <geometry>
-        <mesh filename="package://assets/part_1__3.stl"/>
+        <mesh filename="part_1__3.stl"/>
       </geometry>
     </collision>
   </link>
@@ -181,7 +210,7 @@
     <visual>
       <origin xyz="0 0 -0.004" rpy="1.03918e-18 -3.41966e-17 -8.52784e-18"/>
       <geometry>
-        <mesh filename="package://assets/part_1__4.stl"/>
+        <mesh filename="part_1__4.stl"/>
       </geometry>
       <material name="part_1_7_material">
         <color rgba="0.25098 0.25098 0.25098 1"/>
@@ -190,7 +219,7 @@
     <collision>
       <origin xyz="0 0 -0.004" rpy="1.03918e-18 -3.41966e-17 -8.52784e-18"/>
       <geometry>
-        <mesh filename="package://assets/part_1__4.stl"/>
+        <mesh filename="part_1__4.stl"/>
       </geometry>
     </collision>
   </link>
@@ -229,7 +258,7 @@
     <visual>
       <origin xyz="0.592033 -1.29728 0.863499" rpy="3.14159 -7.1865e-15 0.858932"/>
       <geometry>
-        <mesh filename="package://assets/part_1__2.stl"/>
+        <mesh filename="part_1__2.stl"/>
       </geometry>
       <material name="part_1_8_material">
         <color rgba="0.25098 0.25098 0.25098 1"/>
@@ -238,7 +267,7 @@
     <collision>
       <origin xyz="0.592033 -1.29728 0.863499" rpy="3.14159 -7.1865e-15 0.858932"/>
       <geometry>
-        <mesh filename="package://assets/part_1__2.stl"/>
+        <mesh filename="part_1__2.stl"/>
       </geometry>
     </collision>
   </link>
@@ -253,7 +282,7 @@
     <visual>
       <origin xyz="0.921634 0.539587 1.34578" rpy="3.14159 3.44615e-15 -1.63868"/>
       <geometry>
-        <mesh filename="package://assets/part_1__3.stl"/>
+        <mesh filename="part_1__3.stl"/>
       </geometry>
       <material name="part_1_9_material">
         <color rgba="0.25098 0.25098 0.25098 1"/>
@@ -262,7 +291,7 @@
     <collision>
       <origin xyz="0.921634 0.539587 1.34578" rpy="3.14159 3.44615e-15 -1.63868"/>
       <geometry>
-        <mesh filename="package://assets/part_1__3.stl"/>
+        <mesh filename="part_1__3.stl"/>
       </geometry>
     </collision>
   </link>
@@ -277,7 +306,7 @@
     <visual>
       <origin xyz="0 -1.38778e-17 -0.004" rpy="-1.64693e-18 -3.3924e-17 -4.7432e-18"/>
       <geometry>
-        <mesh filename="package://assets/part_1__4.stl"/>
+        <mesh filename="part_1__4.stl"/>
       </geometry>
       <material name="part_1_10_material">
         <color rgba="0.25098 0.25098 0.25098 1"/>
@@ -286,7 +315,7 @@
     <collision>
       <origin xyz="0 -1.38778e-17 -0.004" rpy="-1.64693e-18 -3.3924e-17 -4.7432e-18"/>
       <geometry>
-        <mesh filename="package://assets/part_1__4.stl"/>
+        <mesh filename="part_1__4.stl"/>
       </geometry>
     </collision>
   </link>
@@ -325,7 +354,7 @@
     <visual>
       <origin xyz="-0.595484 -1.2957 0.863499" rpy="3.14159 -6.98532e-15 -1.8042e-17"/>
       <geometry>
-        <mesh filename="package://assets/part_1__2.stl"/>
+        <mesh filename="part_1__2.stl"/>
       </geometry>
       <material name="part_1_11_material">
         <color rgba="0.25098 0.25098 0.25098 1"/>
@@ -334,7 +363,7 @@
     <collision>
       <origin xyz="-0.595484 -1.2957 0.863499" rpy="3.14159 -6.98532e-15 -1.8042e-17"/>
       <geometry>
-        <mesh filename="package://assets/part_1__2.stl"/>
+        <mesh filename="part_1__2.stl"/>
       </geometry>
     </collision>
   </link>
@@ -349,7 +378,7 @@
     <visual>
       <origin xyz="0.916527 0.548217 1.34578" rpy="3.14159 2.43975e-14 -1.62929"/>
       <geometry>
-        <mesh filename="package://assets/part_1__3.stl"/>
+        <mesh filename="part_1__3.stl"/>
       </geometry>
       <material name="part_1_12_material">
         <color rgba="0.25098 0.25098 0.25098 1"/>
@@ -358,7 +387,7 @@
     <collision>
       <origin xyz="0.916527 0.548217 1.34578" rpy="3.14159 2.43975e-14 -1.62929"/>
       <geometry>
-        <mesh filename="package://assets/part_1__3.stl"/>
+        <mesh filename="part_1__3.stl"/>
       </geometry>
     </collision>
   </link>
@@ -373,7 +402,7 @@
     <visual>
       <origin xyz="2.77556e-17 -1.66533e-16 -0.004" rpy="5.33287e-15 1.38032e-14 -1.9406"/>
       <geometry>
-        <mesh filename="package://assets/part_1__4.stl"/>
+        <mesh filename="part_1__4.stl"/>
       </geometry>
       <material name="part_1_13_material">
         <color rgba="0.25098 0.25098 0.25098 1"/>
@@ -382,7 +411,7 @@
     <collision>
       <origin xyz="2.77556e-17 -1.66533e-16 -0.004" rpy="5.33287e-15 1.38032e-14 -1.9406"/>
       <geometry>
-        <mesh filename="package://assets/part_1__4.stl"/>
+        <mesh filename="part_1__4.stl"/>
       </geometry>
     </collision>
   </link>
@@ -410,4 +439,32 @@
     <axis xyz="0 0 1"/>
     <limit effort="10" velocity="10" lower="-2.2539" upper="2.0686"/>
   </joint>
+  <mujoco>
+      <compiler meshdir="." balanceinertia="true"/>
+      <asset>
+          <texture name="grid" type="2d" builtin="checker" rgb1=".1 .2 .3" rgb2=".2 .3 .4" width="300" height="300" mark="edge" markrgb=".8 .8 .8"/>
+          <material name="grid" texture="grid" texrepeat="1 1" texuniform="true" reflectance=".2"/>
+      </asset>
+      <actuator>
+        <!-- Leg 1 -->
+        <motor name="kn_yaw_1_motor" joint="kn_yaw_1" gear="10" ctrlrange="-10 10"/>
+        <motor name="sh_yaw_1_motor" joint="sh_yaw_1" gear="10" ctrlrange="-10 10"/>
+        <motor name="sh_roll_1_motor" joint="sh_roll_1" gear="10" ctrlrange="-10 10"/>
+        
+        <!-- Leg 2 -->
+        <motor name="kn_yaw_2_motor" joint="kn_yaw_2" gear="10" ctrlrange="-10 10"/>
+        <motor name="sh_yaw_2_motor" joint="sh_yaw_2" gear="10" ctrlrange="-10 10"/>
+        <motor name="sh_roll_2_motor" joint="sh_roll_2" gear="10" ctrlrange="-10 10"/>
+        
+        <!-- Leg 3 -->
+        <motor name="kn_yaw_3_motor" joint="kn_yaw_3" gear="10" ctrlrange="-10 10"/>
+        <motor name="sh_yaw_3_motor" joint="sh_yaw_3" gear="10" ctrlrange="-10 10"/>
+        <motor name="sh_roll_3_motor" joint="sh_roll_3" gear="10" ctrlrange="-10 10"/>
+        
+        <!-- Leg 4 -->
+        <motor name="kn_yaw_4_motor" joint="kn_yaw_4" gear="10" ctrlrange="-10 10"/>
+        <motor name="sh_yaw_4_motor" joint="sh_yaw_4" gear="10" ctrlrange="-10 10"/>
+        <motor name="sh_roll_4_motor" joint="sh_roll_4" gear="10" ctrlrange="-10 10"/>
+      </actuator>
+  </mujoco>
 </robot>
