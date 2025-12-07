@@ -1,1 +1,7 @@
-mujoco
+jax>=0.4.20
+mujoco>=3.1.0
+mujoco-mjx>=0.0.6
+numpy>=1.26.0
+warp-lang>=1.0.0
+flax>=0.8.0
+optax>=0.2.0

@@ -1,0 +1,30 @@
+<mujoco model="SpiderTraining">
+  <compiler angle="radian" meshdir="."/>
+  <option timestep="0.002"/>
+  
+  <!-- Include the URDF robot model -->
+  <include file="robot_no_ground.urdf"/>
+  
+  <!-- Define actuators for all 12 joints -->
+  <actuator>
+    <!-- Leg 1 -->
+    <motor name="sh_roll_1_motor" joint="sh_roll_1" gear="10" ctrlrange="-10 10"/>
+    <motor name="sh_yaw_1_motor" joint="sh_yaw_1" gear="10" ctrlrange="-10 10"/>
+    <motor name="kn_yaw_1_motor" joint="kn_yaw_1" gear="10" ctrlrange="-10 10"/>
+    
+    <!-- Leg 2 -->
+    <motor name="sh_roll_2_motor" joint="sh_roll_2" gear="10" ctrlrange="-10 10"/>
+    <motor name="sh_yaw_2_motor" joint="sh_yaw_2" gear="10" ctrlrange="-10 10"/>
+    <motor name="kn_yaw_2_motor" joint="kn_yaw_2" gear="10" ctrlrange="-10 10"/>
+    
+    <!-- Leg 3 -->
+    <motor name="sh_roll_3_motor" joint="sh_roll_3" gear="10" ctrlrange="-10 10"/>
+    <motor name="sh_yaw_3_motor" joint="sh_yaw_3" gear="10" ctrlrange="-10 10"/>
+    <motor name="kn_yaw_3_motor" joint="kn_yaw_3" gear="10" ctrlrange="-10 10"/>
+    
+    <!-- Leg 4 -->
+    <motor name="sh_roll_4_motor" joint="sh_roll_4" gear="10" ctrlrange="-10 10"/>
+    <motor name="sh_yaw_4_motor" joint="sh_yaw_4" gear="10" ctrlrange="-10 10"/>
+    <motor name="kn_yaw_4_motor" joint="kn_yaw_4" gear="10" ctrlrange="-10 10"/>
+  </actuator>
+</mujoco>

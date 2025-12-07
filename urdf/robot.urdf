@@ -28,7 +28,7 @@
   <joint name="floor_to_base" type="floating">
     <parent link="floor"/>
     <child link="part_1"/>
-    <origin xyz="0 0 0.5" rpy="0 0 0"/> <!-- Lift robot up by 0.5m -->
+    <origin xyz="0 0 0.2" rpy="0 0 0"/> <!-- Lift robot up by 0.2m -->
   </joint>
 
   <!-- Link part_1 -->
