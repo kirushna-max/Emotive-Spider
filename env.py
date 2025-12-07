@@ -340,9 +340,17 @@ class SpiderEnv:
         # APPLY ACTION
         # ====================================================================
         
-        # Scale actions from [-1, 1] to actual control range
-        # The URDF specifies ctrlrange="-10 10" for all motors
-        scaled_action = action * 10.0
+        # Clip action to [-1, 1] range first for safety
+        action = jnp.clip(action, -1.0, 1.0)
+        
+        # Replace any NaN values with zeros
+        action = jnp.where(jnp.isnan(action), 0.0, action)
+        
+        # Scale actions from [-1, 1] to control range [-1, 1]
+        # Note: Actuators in XML have gear=10 and ctrlrange="-10 10"
+        # So ctrl values should be in [-10, 10], but the gear already amplifies
+        # We use action directly (scaled to ctrl range) - the gear does the rest
+        scaled_action = action * 1.0  # ctrl in [-1, 1], gear=10 gives torque [-10, 10]
         
         # Set control inputs
         mjx_data = state.mjx_data.replace(ctrl=scaled_action)
@@ -468,6 +476,13 @@ class SpiderEnv:
             body_quaternion,     # 4 values
             body_angular_vel,    # 3 values
         ])
+        
+        # Safety: replace any NaN/Inf values with zeros
+        obs = jnp.where(jnp.isnan(obs), 0.0, obs)
+        obs = jnp.where(jnp.isinf(obs), 0.0, obs)
+        
+        # Clip velocities to reasonable range to prevent explosion
+        obs = jnp.clip(obs, -100.0, 100.0)
         
         return obs
     

@@ -134,7 +134,7 @@ def visualize_policy(
             action = get_action(action_key, obs)
             
             # Apply action
-            mj_data.ctrl[:] = np.array(action) * 10.0
+            mj_data.ctrl[:] = np.array(action)  # gear=10 in XML provides scaling
             
             # Step simulation
             for _ in range(4):  # action_repeat
@@ -229,7 +229,7 @@ def run_random_demo():
             # Random action
             rng, key = random.split(rng)
             action = random.uniform(key, (mj_model.nu,), minval=-1.0, maxval=1.0)
-            mj_data.ctrl[:] = np.array(action) * 10.0
+            mj_data.ctrl[:] = np.array(action)  # gear=10 in XML provides scaling
             
             # Step
             for _ in range(4):

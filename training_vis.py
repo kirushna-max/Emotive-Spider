@@ -102,7 +102,7 @@ class TrainingVisualizer:
                     action = action[0]
                     
                     # Apply action
-                    self.mj_data.ctrl[:] = np.array(action) * 10.0
+                    self.mj_data.ctrl[:] = np.array(action)  # gear=10 in XML provides scaling
                     
                     # Step simulation
                     for _ in range(4):  # action_repeat
