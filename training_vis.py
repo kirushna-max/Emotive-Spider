@@ -2,360 +2,225 @@
 ============================================================================
 Real-Time Training Visualization for Emotive-Spider
 ============================================================================
-This script allows you to watch the spider robot learn to walk in real-time.
-It runs training iterations and periodically updates a MuJoCo viewer to show
-the current policy's behavior.
+This script watches the checkpoints directory and visualizes the latest
+trained policy in real-time. Run this alongside train.py to watch progress.
 
 Usage:
-    python training_vis.py
+    Terminal 1: python train.py
+    Terminal 2: python training_vis.py
 
-Press ESC in the viewer window to stop training.
+Press ESC in the viewer window to stop.
 ============================================================================
 """
 
 import os
 import pickle
 import time
-import threading
-from typing import Any
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
 from jax import random
-import flax.linen as nn
-from flax.linen.initializers import constant, orthogonal
-import optax
 import numpy as np
 import mujoco
 import mujoco.viewer
 
-from env import SpiderEnv, VecSpiderEnv
-from train import ActorCritic, sample_action, compute_gae, ppo_loss
+from env import SpiderEnv
+from train import ActorCritic, sample_action
 
 
-# ============================================================================
-# VISUALIZATION THREAD
-# ============================================================================
-
-class TrainingVisualizer:
+def get_latest_checkpoint(checkpoint_dir: str = "checkpoints") -> tuple:
     """
-    Runs MuJoCo visualization in a separate thread while training continues.
+    Find and load the latest checkpoint.
     
-    This allows you to see the robot's current behavior without blocking
-    the training loop.
+    Returns:
+        (params, update_num, mean_reward) or (None, 0, 0) if no checkpoint
     """
+    checkpoint_path = Path(checkpoint_dir)
     
-    def __init__(self, env: SpiderEnv):
-        """
-        Initialize visualizer.
-        
-        Args:
-            env: Spider environment (for model access)
-        """
-        self.env = env
-        self.mj_model = env.get_mj_model()
-        self.mj_data = mujoco.MjData(self.mj_model)
-        
-        # Current policy parameters (updated from training thread)
-        self.current_params = None
-        self.network = None
-        
-        # Control flags
-        self.running = True
-        self.update_ready = threading.Event()
-        
-    def set_network(self, network: ActorCritic, params: Any):
-        """Update the current policy parameters."""
-        self.network = network
-        self.current_params = params
-        self.update_ready.set()
+    # Try latest.pkl first
+    latest_file = checkpoint_path / "latest.pkl"
+    if latest_file.exists():
+        try:
+            with open(latest_file, 'rb') as f:
+                checkpoint = pickle.load(f)
+            update_num = checkpoint.get('update', 0)
+            rewards = checkpoint.get('rewards', [])
+            mean_reward = np.mean(rewards[-10:]) if rewards else 0
+            return checkpoint['params'], update_num, mean_reward
+        except Exception as e:
+            print(f"Error loading {latest_file}: {e}")
     
-    def run_visualization(self, rng: jax.Array):
-        """
-        Run the visualization loop.
-        
-        This runs in the main thread (required by MuJoCo viewer).
-        """
-        print("Starting visualization...")
-        
-        with mujoco.viewer.launch_passive(self.mj_model, self.mj_data) as viewer:
-            # Reset simulation
-            mujoco.mj_resetData(self.mj_model, self.mj_data)
-            self.mj_data.qpos[2] = 0.2  # Start height
-            
-            episode_reward = 0.0
-            episode_steps = 0
-            
-            while viewer.is_running() and self.running:
-                if self.current_params is not None and self.network is not None:
-                    # Get observation from current state
-                    obs = self._get_obs()
-                    
-                    # Sample action from policy
-                    rng, action_key = random.split(rng)
-                    action, _, _ = sample_action(
-                        action_key, 
-                        self.current_params, 
-                        self.network, 
-                        obs[None, :]
-                    )
-                    action = action[0]
-                    
-                    # Apply action
-                    self.mj_data.ctrl[:] = np.array(action)  # gear=10 in XML provides scaling
-                    
-                    # Step simulation
-                    for _ in range(4):  # action_repeat
-                        mujoco.mj_step(self.mj_model, self.mj_data)
-                    
-                    # Update viewer
-                    viewer.sync()
-                    
-                    # Track episode
-                    episode_steps += 1
-                    
-                    # Check termination
-                    if self.mj_data.qpos[2] < 0.05 or episode_steps > 500:
-                        # Reset episode
-                        mujoco.mj_resetData(self.mj_model, self.mj_data)
-                        self.mj_data.qpos[2] = 0.2
-                        episode_steps = 0
-                else:
-                    # No policy yet, just step with zero control
-                    mujoco.mj_step(self.mj_model, self.mj_data)
-                    viewer.sync()
-                
-                # Small delay for smooth visualization
-                time.sleep(0.01)
-        
-        self.running = False
-        print("Visualization stopped.")
+    # Fallback: find highest numbered checkpoint
+    checkpoints = list(checkpoint_path.glob("checkpoint_*.pkl"))
+    if checkpoints:
+        # Sort by number
+        checkpoints.sort(key=lambda p: int(p.stem.split('_')[1]))
+        latest = checkpoints[-1]
+        try:
+            with open(latest, 'rb') as f:
+                checkpoint = pickle.load(f)
+            update_num = checkpoint.get('update', 0)
+            rewards = checkpoint.get('rewards', [])
+            mean_reward = np.mean(rewards[-10:]) if rewards else 0
+            return checkpoint['params'], update_num, mean_reward
+        except Exception as e:
+            print(f"Error loading {latest}: {e}")
     
-    def _get_obs(self) -> jnp.ndarray:
-        """Extract observation from MuJoCo data."""
-        joint_pos = self.mj_data.qpos[7:]
-        joint_vel = self.mj_data.qvel[6:]
-        body_quat = self.mj_data.qpos[3:7]
-        body_angvel = self.mj_data.qvel[3:6]
-        
-        return jnp.concatenate([
-            jnp.array(joint_pos),
-            jnp.array(joint_vel),
-            jnp.array(body_quat),
-            jnp.array(body_angvel),
-        ])
-    
-    def stop(self):
-        """Stop the visualization."""
-        self.running = False
+    return None, 0, 0
 
 
-# ============================================================================
-# TRAINING WITH VISUALIZATION
-# ============================================================================
-
-def train_with_visualization(
-    num_envs: int = 32,
-    num_steps: int = 128,
-    num_updates: int = 500,
-    num_epochs: int = 4,
-    minibatch_size: int = 128,
-    learning_rate: float = 3e-4,
-    gamma: float = 0.99,
-    gae_lambda: float = 0.95,
-    clip_eps: float = 0.2,
-    vf_coef: float = 0.5,
-    ent_coef: float = 0.01,
-    max_grad_norm: float = 0.5,
-    seed: int = 0,
-    vis_update_freq: int = 5,
+def visualize_training(
+    checkpoint_dir: str = "checkpoints",
+    reload_interval: float = 10.0,  # Seconds between checkpoint reloads
 ):
     """
-    Run PPO training with real-time visualization.
+    Visualize the current trained policy, auto-reloading checkpoints.
     
     Args:
-        num_envs: Number of parallel environments
-        num_steps: Rollout length
-        num_updates: Number of policy updates
-        vis_update_freq: How often to update visualization policy
-        ... (other args same as train.py)
+        checkpoint_dir: Directory containing training checkpoints
+        reload_interval: How often to check for new checkpoints (seconds)
     """
     print("=" * 60)
-    print("PPO TRAINING WITH REAL-TIME VISUALIZATION")
+    print("EMOTIVE-SPIDER TRAINING VISUALIZER")
     print("=" * 60)
-    
-    # Initialize random key
-    rng = random.PRNGKey(seed)
+    print(f"\nWatching checkpoint directory: {checkpoint_dir}")
+    print(f"Reload interval: {reload_interval}s")
+    print("\nWaiting for first checkpoint...")
     
     # Create environment
-    print("\nInitializing environment...")
-    base_env = SpiderEnv()
-    vec_env = VecSpiderEnv(base_env, num_envs)
+    env = SpiderEnv()
+    mj_model = env.get_mj_model()
+    mj_data = mujoco.MjData(mj_model)
     
     # Create network
-    print("Creating neural network...")
-    network = ActorCritic(action_size=base_env.action_size)
+    network = ActorCritic(action_size=env.action_size)
     
-    # Initialize parameters
-    rng, init_key = random.split(rng)
-    dummy_obs = jnp.zeros((1, base_env.obs_size))
-    params = network.init(init_key, dummy_obs)
+    # Initialize with dummy params (will be replaced by checkpoint)
+    rng = random.PRNGKey(42)
+    dummy_obs = jnp.zeros((1, env.obs_size))
+    params = network.init(rng, dummy_obs)
     
-    # Create optimizer
-    optimizer = optax.chain(
-        optax.clip_by_global_norm(max_grad_norm),
-        optax.adam(learning_rate),
-    )
-    opt_state = optimizer.init(params)
+    # Track current checkpoint
+    current_update = 0
+    last_reload_time = 0
     
-    # Create visualizer
-    visualizer = TrainingVisualizer(base_env)
-    visualizer.set_network(network, params)
+    # Try to load initial checkpoint
+    loaded_params, loaded_update, mean_reward = get_latest_checkpoint(checkpoint_dir)
+    if loaded_params is not None:
+        params = loaded_params
+        current_update = loaded_update
+        print(f"\n✓ Loaded checkpoint {current_update} (reward: {mean_reward:.4f})")
     
-    # JIT compile functions
+    # JIT compile action function
     @jax.jit
-    def get_action(rng, params, obs):
-        return sample_action(rng, params, network, obs)
+    def get_action(rng, obs):
+        action, _, _ = sample_action(rng, params, network, obs[None, :])
+        return action[0]
     
-    @jax.jit
-    def compute_advantages(rewards, values, dones, last_value):
-        return compute_gae(rewards, values, dones, last_value, gamma, gae_lambda)
+    print("\nLaunching viewer...")
+    print("Controls: ESC to quit | Automatically reloads latest checkpoint")
     
-    @jax.jit
-    def update_step(params, opt_state, batch):
-        obs, actions, old_log_probs, advantages, returns = batch
+    with mujoco.viewer.launch_passive(mj_model, mj_data) as viewer:
+        # Reset
+        mujoco.mj_resetData(mj_model, mj_data)
+        mj_data.qpos[2] = 0.2
         
-        def loss_fn(p):
-            return ppo_loss(
-                p, network, obs, actions, old_log_probs,
-                advantages, returns, clip_eps, vf_coef, ent_coef
-            )
+        episode = 0
+        step = 0
+        episode_distance = 0
+        start_x = 0
         
-        (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
-        updates, new_opt_state = optimizer.update(grads, opt_state, params)
-        new_params = optax.apply_updates(params, updates)
-        
-        return new_params, new_opt_state, metrics
-    
-    # Start training in background thread
-    def training_thread():
-        nonlocal params, opt_state
-        
-        # Reset environments
-        rng_train = random.PRNGKey(seed + 1)
-        rng_train, reset_key = random.split(rng_train)
-        obs, env_states = vec_env.reset(reset_key)
-        
-        for update in range(num_updates):
-            if not visualizer.running:
-                break
-                
-            # Collect rollout
-            rollout_obs = []
-            rollout_actions = []
-            rollout_rewards = []
-            rollout_dones = []
-            rollout_values = []
-            rollout_log_probs = []
+        while viewer.is_running():
+            current_time = time.time()
             
-            for step in range(num_steps):
-                rng_train, action_key = random.split(rng_train)
-                actions, log_probs, values = get_action(action_key, params, obs)
+            # Check for new checkpoint periodically
+            if current_time - last_reload_time > reload_interval:
+                last_reload_time = current_time
+                loaded_params, loaded_update, mean_reward = get_latest_checkpoint(checkpoint_dir)
                 
-                next_obs, env_states, rewards, infos = vec_env.step(env_states, actions)
-                dones = env_states.done
-                
-                rollout_obs.append(obs)
-                rollout_actions.append(actions)
-                rollout_rewards.append(rewards)
-                rollout_dones.append(dones)
-                rollout_values.append(values)
-                rollout_log_probs.append(log_probs)
-                
-                # Reset done envs
-                rng_train, reset_key = random.split(rng_train)
-                reset_obs, reset_states = vec_env.reset(reset_key)
-                obs = jnp.where(dones[:, None], reset_obs, next_obs)
-                
-                # Helper to broadcast dones to match any array shape
-                def select_state(reset_val, current_val):
-                    expanded_dones = dones
-                    for _ in range(reset_val.ndim - 1):
-                        expanded_dones = expanded_dones[..., None]
-                    return jnp.where(expanded_dones, reset_val, current_val)
-                
-                env_states = jax.tree.map(select_state, reset_states, env_states)
-            
-            # Stack and compute advantages
-            rollout_obs = jnp.stack(rollout_obs)
-            rollout_actions = jnp.stack(rollout_actions)
-            rollout_rewards = jnp.stack(rollout_rewards)
-            rollout_dones = jnp.stack(rollout_dones)
-            rollout_values = jnp.stack(rollout_values)
-            rollout_log_probs = jnp.stack(rollout_log_probs)
-            
-            _, _, last_value = get_action(rng_train, params, obs)
-            advantages, returns = compute_advantages(
-                rollout_rewards, rollout_values, rollout_dones, last_value
-            )
-            
-            # Update policy
-            batch_size = num_envs * num_steps
-            flat_obs = rollout_obs.reshape(batch_size, -1)
-            flat_actions = rollout_actions.reshape(batch_size, -1)
-            flat_log_probs = rollout_log_probs.reshape(batch_size)
-            flat_advantages = advantages.reshape(batch_size)
-            flat_returns = returns.reshape(batch_size)
-            
-            for epoch in range(num_epochs):
-                rng_train, shuffle_key = random.split(rng_train)
-                perm = random.permutation(shuffle_key, batch_size)
-                
-                for start_idx in range(0, batch_size, minibatch_size):
-                    end_idx = start_idx + minibatch_size
-                    mb_idx = perm[start_idx:end_idx]
+                if loaded_params is not None and loaded_update > current_update:
+                    params = loaded_params
+                    current_update = loaded_update
                     
-                    batch = (
-                        flat_obs[mb_idx],
-                        flat_actions[mb_idx],
-                        flat_log_probs[mb_idx],
-                        flat_advantages[mb_idx],
-                        flat_returns[mb_idx],
-                    )
+                    # Recompile with new params
+                    @jax.jit
+                    def get_action(rng, obs):
+                        action, _, _ = sample_action(rng, params, network, obs[None, :])
+                        return action[0]
                     
-                    params, opt_state, metrics = update_step(params, opt_state, batch)
+                    print(f"✓ Loaded checkpoint {current_update} | "
+                          f"Avg reward: {mean_reward:.4f} | "
+                          f"Episode: {episode}")
             
-            # Update visualization policy
-            if (update + 1) % vis_update_freq == 0:
-                visualizer.set_network(network, params)
-                mean_reward = float(jnp.mean(rollout_rewards))
-                print(f"Update {update + 1}/{num_updates} | Mean reward: {mean_reward:.4f}")
-        
-        print("Training complete!")
-        visualizer.stop()
+            # Get observation
+            joint_pos = mj_data.qpos[7:]
+            joint_vel = mj_data.qvel[6:]
+            body_quat = mj_data.qpos[3:7]
+            body_angvel = mj_data.qvel[3:6]
+            
+            obs = jnp.concatenate([
+                jnp.array(joint_pos),
+                jnp.array(joint_vel),
+                jnp.array(body_quat),
+                jnp.array(body_angvel),
+            ])
+            
+            # Get action
+            rng, key = random.split(rng)
+            action = get_action(key, obs)
+            
+            # Apply action
+            mj_data.ctrl[:] = np.array(action)
+            
+            # Step simulation
+            for _ in range(4):
+                mujoco.mj_step(mj_model, mj_data)
+            
+            step += 1
+            
+            # Check termination (tilt > 15°)
+            quat = mj_data.qpos[3:7]
+            w, x, y, z = quat[0], quat[1], quat[2], quat[3]
+            z_up = 1.0 - 2.0 * (x*x + y*y)
+            tilted = z_up < 0.9659
+            
+            if tilted or step > 1000:
+                # Episode ended
+                episode_distance = mj_data.qpos[0] - start_x
+                episode += 1
+                
+                reason = "TILTED" if tilted else "TIMEOUT"
+                print(f"Episode {episode} | Steps: {step} | "
+                      f"Distance: {episode_distance:.3f}m | {reason}")
+                
+                # Reset
+                mujoco.mj_resetData(mj_model, mj_data)
+                mj_data.qpos[2] = 0.2
+                start_x = mj_data.qpos[0]
+                step = 0
+            
+            # Update viewer
+            viewer.sync()
+            
+            # Control playback speed
+            time.sleep(0.008)  # ~125 fps for smooth visualization
     
-    # Start training thread
-    train_thread = threading.Thread(target=training_thread)
-    train_thread.start()
-    
-    # Run visualization in main thread (required by MuJoCo)
-    rng, vis_key = random.split(rng)
-    visualizer.run_visualization(vis_key)
-    
-    # Wait for training to finish
-    train_thread.join()
-    
-    # Save final model
-    print("\nSaving trained model...")
-    os.makedirs("checkpoints", exist_ok=True)
-    with open("checkpoints/vis_trained.pkl", 'wb') as f:
-        pickle.dump({'params': jax.device_get(params)}, f)
-    print("Saved to checkpoints/vis_trained.pkl")
+    print("\nVisualization stopped.")
 
-
-# ============================================================================
-# ENTRY POINT
-# ============================================================================
 
 if __name__ == "__main__":
-    train_with_visualization()
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Watch training progress")
+    parser.add_argument("--checkpoint-dir", type=str, default="checkpoints",
+                        help="Directory containing checkpoints")
+    parser.add_argument("--reload-interval", type=float, default=10.0,
+                        help="Seconds between checkpoint reloads")
+    
+    args = parser.parse_args()
+    
+    visualize_training(
+        checkpoint_dir=args.checkpoint_dir,
+        reload_interval=args.reload_interval,
+    )

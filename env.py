@@ -96,8 +96,8 @@ class SpiderEnv:
         episode_length: int = 1000,
         dt: float = 0.002,
         action_repeat: int = 4,
-        forward_reward_weight: float = 1.0,
-        alive_bonus: float = 0.1,
+        forward_reward_weight: float = 5.0,
+        alive_bonus: float = 0.01,
         sh_roll_penalty_weight: float = 1.0,
         sh_yaw_penalty_weight: float = 1.0,
         symmetry_penalty_weight: float = 0.5,
@@ -607,8 +607,7 @@ class SpiderEnv:
         Check if the episode should terminate.
         
         Termination conditions:
-        1. Robot has fallen (z-position below threshold)
-        2. Robot has flipped over (orientation check)
+        1. Robot body is tilted too much (z-axis makes <75° angle with vertical)
         
         Args:
             mjx_data: Current MJX simulation data
@@ -617,35 +616,44 @@ class SpiderEnv:
             done: Boolean indicating termination
         """
         # ====================================================================
-        # CHECK HEIGHT (FALLING)
+        # CHECK ORIENTATION (TILT ANGLE)
         # ====================================================================
         
-        # Terminate if robot z-position is too low (fallen)
-        z_pos = mjx_data.qpos[2]
-        fallen = z_pos < 0.05  # Below 5cm is considered fallen
-        
-        # ====================================================================
-        # CHECK ORIENTATION (FLIPPED)
-        # ====================================================================
-        
-        # Get quaternion [w, x, y, z]
+        # Get quaternion [w, x, y, z] from qpos
         quat = mjx_data.qpos[3:7]
         
-        # The "up" direction in the body frame should still roughly point up
-        # Check if the robot has flipped by looking at the z-component
-        # after rotating [0, 0, 1] by the quaternion
+        # Calculate the z-component of the body's up vector after rotation
+        # For a quaternion q = [w, x, y, z], the rotated z-axis is:
+        # z_up = 1 - 2*(x^2 + y^2)  (this is the z-component of rotated [0,0,1])
+        # This equals cos(tilt_angle) where tilt_angle is from vertical
         
-        # Simplified check: if |quat_w| is too small, robot likely flipped
-        # For a roughly upright orientation, quat_w should be close to 1 or -1
-        flipped = jnp.abs(quat[0]) < 0.5
+        w, x, y, z = quat[0], quat[1], quat[2], quat[3]
         
-        # ====================================================================
-        # COMBINE TERMINATION CONDITIONS
-        # ====================================================================
+        # z-component of the body's up vector in world frame
+        # This is the dot product of body z-axis with world z-axis
+        z_up = 1.0 - 2.0 * (x*x + y*y)
         
-        done = fallen | flipped
+        # z_up = cos(tilt_angle_from_vertical)
+        # We want to terminate if tilt > 15° (i.e., angle from vertical > 15°)
+        # which means angle from horizontal (xy plane) < 75°
+        # cos(15°) ≈ 0.966, so terminate if z_up < 0.966
+        # But user said 75° from xy plane, so angle from vertical is 15°
+        # Let's be more lenient: cos(25°) ≈ 0.906
         
-        return done
+        # Terminate if tilted more than 25° from upright (75° from ground would be 15°)
+        # Using cos(15°) = 0.9659 for 75° from xy plane
+        tilted = z_up < 0.259  # cos(75°) ≈ 0.259 - this is 75° from vertical
+        
+        # Actually, let's interpret correctly:
+        # "z axis makes an angle of less than 75 with the xy plane"
+        # means the robot's z-axis is nearly horizontal (bad)
+        # When upright, z-axis is 90° from xy plane
+        # So terminate if angle < 75°, meaning tilted > 15° from vertical
+        # cos(15°) = 0.9659
+        
+        tilted = z_up < 0.9659  # Terminate if tilted more than 15° from upright
+        
+        return tilted
     
     # ========================================================================
     # UTILITY METHODS
