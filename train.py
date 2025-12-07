@@ -93,11 +93,17 @@ class ActorCritic(nn.Module):
         )(actor)
         
         # Learnable log standard deviation (state-independent)
+        # Initialize to -0.5 for reasonable initial exploration
         action_log_std = self.param(
             'log_std',
-            nn.initializers.zeros,
+            lambda key, shape: jnp.full(shape, -0.5),
             (self.action_size,)
         )
+        
+        # CRITICAL: Clamp log_std to prevent explosion or collapse
+        # Min -2.0 (std=0.135) prevents over-confidence
+        # Max 0.5 (std=1.65) prevents too much randomness
+        action_log_std = jnp.clip(action_log_std, -2.0, 0.5)
         
         # ====================================================================
         # CRITIC NETWORK
@@ -173,6 +179,9 @@ def sample_action(
         value: Value estimate
     """
     action_mean, action_log_std, value = network.apply(params, obs)
+    
+    # SAFETY: Clamp log_std to prevent numerical issues
+    action_log_std = jnp.clip(action_log_std, -2.0, 0.5)
     action_std = jnp.exp(action_log_std)
     
     # Sample from Gaussian
@@ -182,9 +191,9 @@ def sample_action(
     # Clip action to valid range
     action = jnp.clip(action, -1.0, 1.0)
     
-    # Compute log probability
+    # Compute log probability (with epsilon for numerical stability)
     log_prob = -0.5 * jnp.sum(
-        jnp.square((action - action_mean) / action_std) + 
+        jnp.square((action - action_mean) / (action_std + 1e-8)) + 
         2 * action_log_std + 
         jnp.log(2 * jnp.pi),
         axis=-1
@@ -278,32 +287,55 @@ def ppo_loss(
     """
     # Forward pass
     action_mean, action_log_std, values = network.apply(params, obs)
+    
+    # SAFETY: Clamp log_std to prevent numerical issues
+    action_log_std = jnp.clip(action_log_std, -2.0, 0.5)
     action_std = jnp.exp(action_log_std)
     
     # Compute new log probabilities
     log_probs = -0.5 * jnp.sum(
-        jnp.square((actions - action_mean) / action_std) + 
+        jnp.square((actions - action_mean) / (action_std + 1e-8)) + 
         2 * action_log_std + 
         jnp.log(2 * jnp.pi),
         axis=-1
     )
     
-    # Policy loss with clipping
-    ratio = jnp.exp(log_probs - old_log_probs)
-    advantages_normalized = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+    # SAFETY: Clip log probability difference to prevent ratio explosion
+    log_ratio = jnp.clip(log_probs - old_log_probs, -10.0, 10.0)
+    ratio = jnp.exp(log_ratio)
+    
+    # SAFETY: Clip ratio explicitly as additional safeguard
+    ratio = jnp.clip(ratio, 0.0, 10.0)
+    
+    # Normalize advantages with robust scaling
+    adv_mean = jnp.mean(advantages)
+    adv_std = jnp.std(advantages)
+    advantages_normalized = (advantages - adv_mean) / (adv_std + 1e-8)
+    
+    # SAFETY: Clip normalized advantages to prevent extreme values
+    advantages_normalized = jnp.clip(advantages_normalized, -10.0, 10.0)
     
     pg_loss1 = -advantages_normalized * ratio
     pg_loss2 = -advantages_normalized * jnp.clip(ratio, 1 - clip_eps, 1 + clip_eps)
     policy_loss = jnp.mean(jnp.maximum(pg_loss1, pg_loss2))
     
-    # Value function loss
+    # SAFETY: Clip policy loss to prevent explosion
+    policy_loss = jnp.clip(policy_loss, -100.0, 100.0)
+    
+    # Value function loss with clipping
     value_loss = jnp.mean(jnp.square(values - returns))
+    value_loss = jnp.clip(value_loss, 0.0, 10000.0)
     
     # Entropy bonus (encourage exploration)
     entropy = 0.5 * jnp.sum(1 + 2 * action_log_std + jnp.log(2 * jnp.pi))
     
     # Total loss
     total_loss = policy_loss + vf_coef * value_loss - ent_coef * entropy
+    
+    # SAFETY: Replace NaN with large loss to trigger recovery
+    total_loss = jnp.where(jnp.isnan(total_loss), 100.0, total_loss)
+    policy_loss = jnp.where(jnp.isnan(policy_loss), 100.0, policy_loss)
+    value_loss = jnp.where(jnp.isnan(value_loss), 100.0, value_loss)
     
     metrics = {
         'policy_loss': policy_loss,
@@ -336,6 +368,7 @@ def train(
     checkpoint_dir: str = "checkpoints",
     checkpoint_freq: int = 50,
     test_mode: bool = False,
+    resume_checkpoint: str = None,
 ):
     """
     Main PPO training function.
@@ -357,6 +390,7 @@ def train(
         checkpoint_dir: Directory for checkpoints
         checkpoint_freq: Checkpoint frequency
         test_mode: If True, run only 10 iterations
+        resume_checkpoint: Path to checkpoint file to resume from
     """
     print("=" * 60)
     print("PPO TRAINING FOR EMOTIVE-SPIDER")
@@ -396,6 +430,22 @@ def train(
         optax.adam(learning_rate),
     )
     opt_state = optimizer.init(params)
+    
+    # Resume from checkpoint if specified
+    start_update = 0
+    total_episodes = 0
+    total_rewards = []
+    
+    if resume_checkpoint is not None:
+        print(f"\nResuming from checkpoint: {resume_checkpoint}")
+        with open(resume_checkpoint, 'rb') as f:
+            checkpoint = pickle.load(f)
+        params = checkpoint['params']
+        opt_state = optimizer.init(params)  # Re-init optimizer with loaded params
+        start_update = checkpoint.get('update', 0)
+        total_episodes = checkpoint.get('total_episodes', 0)
+        total_rewards = checkpoint.get('rewards', [])
+        print(f"Resumed from update {start_update}, {total_episodes} episodes completed")
     
     # ========================================================================
     # JIT COMPILE FUNCTIONS
@@ -438,10 +488,12 @@ def train(
     rng, reset_key = random.split(rng)
     obs, env_states = vec_env.reset(reset_key)
     
-    total_episodes = 0
-    total_rewards = []
+    # Initialize counters if not resuming
+    if resume_checkpoint is None:
+        total_episodes = 0
+        total_rewards = []
     
-    for update in range(num_updates):
+    for update in range(start_update, num_updates):
         update_start = time.time()
         
         # ====================================================================
@@ -637,6 +689,8 @@ if __name__ == "__main__":
                         help="Random seed")
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints",
                         help="Directory for checkpoints")
+    parser.add_argument("--resume", type=str, default=None,
+                        help="Path to checkpoint file to resume training from")
     
     args = parser.parse_args()
     
@@ -648,4 +702,5 @@ if __name__ == "__main__":
         seed=args.seed,
         checkpoint_dir=args.checkpoint_dir,
         test_mode=args.test_mode,
+        resume_checkpoint=args.resume,
     )
