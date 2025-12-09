@@ -7,7 +7,7 @@ import time
 def main():
     # Paths
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    urdf_path = os.path.join(current_dir, "urdf", "robot.urdf")
+    urdf_path = os.path.join(current_dir, "urdf", "robot_converted.xml")
     temp_urdf_path = os.path.join(current_dir, "urdf", "robot_no_ground.urdf")
 
     # 1. Modify URDF to remove ground

@@ -25,7 +25,6 @@ import numpy as np
 import mujoco
 import mujoco.viewer
 
-from env import SpiderEnv
 from train import ActorCritic, sample_action
 
 
@@ -70,6 +69,21 @@ def get_latest_checkpoint(checkpoint_dir: str = "checkpoints") -> tuple:
     return None, 0, 0
 
 
+def detect_obs_size(params) -> int:
+    """
+    Detect observation size from checkpoint parameters.
+    
+    Returns:
+        obs_size: Either 31 (old format) or 46 (new format)
+    """
+    # The first Dense layer kernel shape is (obs_size, 256)
+    try:
+        kernel_shape = params['params']['Dense_0']['kernel'].shape
+        return kernel_shape[0]
+    except:
+        return 31  # Default to old format
+
+
 def visualize_training(
     checkpoint_dir: str = "checkpoints",
     reload_interval: float = 10.0,  # Seconds between checkpoint reloads
@@ -88,35 +102,47 @@ def visualize_training(
     print(f"Reload interval: {reload_interval}s")
     print("\nWaiting for first checkpoint...")
     
-    # Create environment
-    env = SpiderEnv()
-    mj_model = env.get_mj_model()
+    # Load model directly (not through env to avoid obs_size mismatch)
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    urdf_path = os.path.join(current_dir, "urdf", "robot_converted.xml")
+    mj_model = mujoco.MjModel.from_xml_path(urdf_path)
     mj_data = mujoco.MjData(mj_model)
-    
-    # Create network
-    network = ActorCritic(action_size=env.action_size)
-    
-    # Initialize with dummy params (will be replaced by checkpoint)
-    rng = random.PRNGKey(42)
-    dummy_obs = jnp.zeros((1, env.obs_size))
-    params = network.init(rng, dummy_obs)
+    action_size = mj_model.nu
     
     # Track current checkpoint
     current_update = 0
     last_reload_time = 0
+    obs_size = 31  # Will be updated based on checkpoint
     
     # Try to load initial checkpoint
     loaded_params, loaded_update, mean_reward = get_latest_checkpoint(checkpoint_dir)
     if loaded_params is not None:
         params = loaded_params
         current_update = loaded_update
+        obs_size = detect_obs_size(params)
         print(f"\n✓ Loaded checkpoint {current_update} (reward: {mean_reward:.4f})")
+        print(f"  Detected obs_size: {obs_size}")
+    else:
+        # Initialize with dummy params
+        rng = random.PRNGKey(42)
+        network = ActorCritic(action_size=action_size)
+        dummy_obs = jnp.zeros((1, obs_size))
+        params = network.init(rng, dummy_obs)
+    
+    # Create network with correct obs size
+    network = ActorCritic(action_size=action_size)
+    
+    # Store current params in a mutable container for closure
+    params_container = {'params': params, 'obs_size': obs_size}
     
     # JIT compile action function
-    @jax.jit
-    def get_action(rng, obs):
+    def get_action(rng, obs, params):
         action, _, _ = sample_action(rng, params, network, obs[None, :])
         return action[0]
+    
+    get_action_jit = jax.jit(get_action)
+    
+    rng = random.PRNGKey(42)
     
     print("\nLaunching viewer...")
     print("Controls: ESC to quit | Automatically reloads latest checkpoint")
@@ -130,6 +156,7 @@ def visualize_training(
         step = 0
         episode_distance = 0
         start_x = 0
+        prev_action = np.zeros(action_size)
         
         while viewer.is_running():
             current_time = time.time()
@@ -140,38 +167,52 @@ def visualize_training(
                 loaded_params, loaded_update, mean_reward = get_latest_checkpoint(checkpoint_dir)
                 
                 if loaded_params is not None and loaded_update > current_update:
-                    params = loaded_params
+                    params_container['params'] = loaded_params
                     current_update = loaded_update
+                    new_obs_size = detect_obs_size(loaded_params)
                     
-                    # Recompile with new params
-                    @jax.jit
-                    def get_action(rng, obs):
-                        action, _, _ = sample_action(rng, params, network, obs[None, :])
-                        return action[0]
+                    if new_obs_size != params_container['obs_size']:
+                        params_container['obs_size'] = new_obs_size
+                        print(f"  Obs size changed to: {new_obs_size}")
                     
                     print(f"✓ Loaded checkpoint {current_update} | "
                           f"Avg reward: {mean_reward:.4f} | "
                           f"Episode: {episode}")
             
-            # Get observation
+            # Get observation based on detected format
             joint_pos = mj_data.qpos[7:]
             joint_vel = mj_data.qvel[6:]
             body_quat = mj_data.qpos[3:7]
             body_angvel = mj_data.qvel[3:6]
             
-            obs = jnp.concatenate([
-                jnp.array(joint_pos),
-                jnp.array(joint_vel),
-                jnp.array(body_quat),
-                jnp.array(body_angvel),
-            ])
+            if params_container['obs_size'] == 31:
+                # Old format: joint_pos(12) + joint_vel(12) + quat(4) + angvel(3) = 31
+                obs = jnp.concatenate([
+                    jnp.array(joint_pos),
+                    jnp.array(joint_vel),
+                    jnp.array(body_quat),
+                    jnp.array(body_angvel),
+                ])
+            else:
+                # New format: + body_linvel(3) + prev_action(12) = 46
+                body_linvel = mj_data.qvel[0:3]
+                obs = jnp.concatenate([
+                    jnp.array(joint_pos),
+                    jnp.array(joint_vel),
+                    jnp.array(body_quat),
+                    jnp.array(body_angvel),
+                    jnp.array(body_linvel),
+                    jnp.array(prev_action),
+                ])
             
             # Get action
             rng, key = random.split(rng)
-            action = get_action(key, obs)
+            action = get_action_jit(key, obs, params_container['params'])
+            action_np = np.array(action)
+            prev_action = action_np
             
             # Apply action
-            mj_data.ctrl[:] = np.array(action)
+            mj_data.ctrl[:] = action_np
             
             # Step simulation
             for _ in range(4):
@@ -179,11 +220,11 @@ def visualize_training(
             
             step += 1
             
-            # Check termination (tilt > 15°)
+            # Check termination (tilt > 45°)
             quat = mj_data.qpos[3:7]
             w, x, y, z = quat[0], quat[1], quat[2], quat[3]
             z_up = 1.0 - 2.0 * (x*x + y*y)
-            tilted = z_up < 0.9659
+            tilted = z_up < 0.707  # cos(45°)
             
             if tilted or step > 1000:
                 # Episode ended
@@ -199,6 +240,7 @@ def visualize_training(
                 mj_data.qpos[2] = 0.2
                 start_x = mj_data.qpos[0]
                 step = 0
+                prev_action = np.zeros(action_size)
             
             # Update viewer
             viewer.sync()

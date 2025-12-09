@@ -1,18 +1,23 @@
 """
 ============================================================================
-Emotive-Spider Training Environment for MuJoCo MJX
+Emotive-Spider Standing Training Environment for MuJoCo MJX
 ============================================================================
-This module defines the training environment for the 4-legged spider robot.
+This module defines the standing training environment for the 4-legged spider robot.
 It uses MuJoCo MJX for JAX-based accelerated physics simulation.
 
-The environment follows a gym-like interface but is designed for vectorized
-simulation with JAX for efficient parallel training.
+The environment teaches the robot to STAND at a target height (10cm) while
+keeping its base perpendicular to the ground.
 
 Key Components:
-- SpiderEnv: Main environment class
+- SpiderStandEnv: Main environment class
 - Observation: Joint positions, velocities, body orientation
 - Actions: 12 motor torques (one per actuator)
-- Rewards: Comprehensive reward function with multiple components
+- Rewards: Standing-focused reward function
+
+Reward Function:
+1. Height reward: Reward for keeping base at 10cm from ground
+2. Orientation reward: Reward for keeping base perpendicular to ground
+3. All penalties from env.py maintained
 ============================================================================
 """
 
@@ -72,12 +77,12 @@ class Transition(NamedTuple):
 # ENVIRONMENT CLASS
 # ============================================================================
 
-class SpiderEnv:
+class SpiderStandEnv:
     """
-    MJX-based training environment for the Emotive-Spider robot.
+    MJX-based training environment for the Emotive-Spider robot (STANDING).
     
-    This environment teaches the spider robot to walk forward while
-    maintaining stability and respecting joint limits.
+    This environment teaches the spider robot to stand at a target height
+    while maintaining a perpendicular orientation to the ground.
     
     Joint Configuration (12 total):
     - Leg 1: sh_roll_1, sh_yaw_1, kn_yaw_1
@@ -86,17 +91,15 @@ class SpiderEnv:
     - Leg 4: sh_roll_4, sh_yaw_4, kn_yaw_4
     
     Reward Function Components:
-    1. Forward velocity reward (positive)
-    2. Alive bonus (positive, for not falling)
-    3. Velocity tracking penalty (deviation from target XY velocity)
-    4. Yaw rate penalty (deviation from target yaw rate)
-    5. Base orientation penalty (non-flat base)
-    6. Motor effort penalty (high torque usage)
-    7. Joint velocity smoothness penalty (rapid changes)
-    8. Jerk penalty (acceleration changes)
-    9. Illegal contact penalty (non-foot parts touching ground)
-    10. kn_yaw angle reward (for angles < 0.7 rad)
-    11. sh_yaw angle reward (for angles < 1.0 rad)
+    1. Height reward (positive): Reward for being close to 10cm target height
+    2. Orientation reward (positive): Reward for keeping base perpendicular to ground
+    3. Alive bonus (positive): For not falling
+    4. All penalties from env.py:
+       - Motor effort penalty
+       - Joint velocity change penalty
+       - Jerk penalty
+       - sh_roll boundary penalty
+       - sh_roll symmetry penalty
     """
     
     def __init__(
@@ -105,17 +108,16 @@ class SpiderEnv:
         episode_length: int = 1000,
         dt: float = 0.002,
         action_repeat: int = 4,
-        # Target velocities
-        target_velocity_x: float = 0.3,  # m/s (reduced for stability)
-        target_velocity_y: float = 0.0,  # m/s
-        target_yaw_rate: float = 0.0,    # rad/s
+        # Target height for standing
+        target_height: float = 0.10,  # 10cm from ground
         # Reward weights (positive = reward, used as multipliers)
-        forward_reward_weight: float = 5.0,  # Main objective
+        height_reward_weight: float = 10.0,  # Main objective - reward for height
+        orientation_reward_weight: float = 5.0,  # Reward for being perpendicular
         alive_bonus: float = 1.0,  # Encourage staying up
         # Penalty weights (these will be negated in reward computation)
-        velocity_tracking_weight: float = 1.0,
+        velocity_tracking_weight: float = 0.5,  # Penalize movement (should stay still)
         yaw_rate_tracking_weight: float = 0.5,
-        base_orientation_weight: float = 2.0,  # Keep body level
+        base_orientation_weight: float = 2.0,  # Keep body level (additional)
         motor_effort_weight: float = 0.01,  # Small energy penalty
         joint_velocity_change_weight: float = 0.1,  # Smooth movements
         jerk_weight: float = 0.05,
@@ -129,17 +131,16 @@ class SpiderEnv:
         death_penalty: float = 10.0,
     ):
         """
-        Initialize the Spider training environment.
+        Initialize the Spider standing training environment.
         
         Args:
             urdf_path: Path to the robot URDF file. If None, uses default path.
             episode_length: Maximum steps per episode.
             dt: Simulation timestep (seconds).
             action_repeat: Number of simulation steps per action.
-            target_velocity_x: Target forward velocity (m/s).
-            target_velocity_y: Target lateral velocity (m/s).
-            target_yaw_rate: Target yaw rotation rate (rad/s).
-            forward_reward_weight: Weight for forward velocity reward.
+            target_height: Target height for the base (meters).
+            height_reward_weight: Weight for height reward (closer to 10cm = higher).
+            orientation_reward_weight: Weight for perpendicular orientation reward.
             alive_bonus: Bonus reward for staying upright.
             velocity_tracking_weight: Penalty weight for velocity deviation.
             yaw_rate_tracking_weight: Penalty weight for yaw rate deviation.
@@ -147,7 +148,6 @@ class SpiderEnv:
             motor_effort_weight: Penalty weight for high motor effort.
             joint_velocity_change_weight: Penalty for rapid joint position changes.
             jerk_weight: Penalty for jerky movements (acceleration changes).
-            illegal_contact_weight: Heavy penalty for illegal ground contacts.
             kn_yaw_angle_reward_weight: Reward for kn_yaw < 0.7 rad.
             sh_yaw_angle_reward_weight: Reward for sh_yaw < 1.0 rad.
             death_penalty: Penalty applied on termination.
@@ -182,13 +182,12 @@ class SpiderEnv:
         self.dt = dt
         self.action_repeat = action_repeat
         
-        # Target velocities
-        self.target_velocity_x = target_velocity_x
-        self.target_velocity_y = target_velocity_y
-        self.target_yaw_rate = target_yaw_rate
+        # Target height for standing
+        self.target_height = target_height
         
         # Reward weights
-        self.forward_reward_weight = forward_reward_weight
+        self.height_reward_weight = height_reward_weight
+        self.orientation_reward_weight = orientation_reward_weight
         self.alive_bonus = alive_bonus
         
         # Penalty weights
@@ -220,9 +219,9 @@ class SpiderEnv:
         
         # Observation: joint positions (12) + joint velocities (12) + 
         # body orientation quaternion (4) + body angular velocity (3) +
-        # base linear velocity (3) + previous actions (12)
-        # Total: 12 + 12 + 4 + 3 + 3 + 12 = 46
-        self.obs_size = 46
+        # base linear velocity (3) + previous actions (12) + height (1)
+        # Total: 12 + 12 + 4 + 3 + 3 + 12 + 1 = 47
+        self.obs_size = 47
         print(f"Observation size: {self.obs_size}")
         
         # ====================================================================
@@ -232,7 +231,7 @@ class SpiderEnv:
         self._setup_joint_indices()
         self._setup_body_indices()
         
-        print("Environment initialized successfully!")
+        print(f"Standing environment initialized with target height: {self.target_height}m")
     
     def _setup_joint_indices(self):
         """
@@ -373,8 +372,8 @@ class SpiderEnv:
         # Create new qpos with noise added to joint positions
         new_qpos = mjx_data.qpos.at[7:].add(noise)
         
-        # Set initial height (z-position) to avoid ground collision
-        new_qpos = new_qpos.at[2].set(0.2)  # Start at 20cm height
+        # Set initial height (z-position) to be near target
+        new_qpos = new_qpos.at[2].set(0.15)  # Start at 15cm height
         
         # Update mjx_data with new positions
         mjx_data = mjx_data.replace(qpos=new_qpos)
@@ -519,6 +518,7 @@ class SpiderEnv:
             'step': new_step_count,
             'x_pos': mjx_data.qpos[0],
             'z_pos': mjx_data.qpos[2],
+            'height_from_target': jnp.abs(mjx_data.qpos[2] - self.target_height),
         }
         
         return obs, new_state, reward, info
@@ -539,15 +539,16 @@ class SpiderEnv:
         - Body angular velocity (3 values): Angular velocity of base
         - Body linear velocity (3 values): Linear velocity of base
         - Previous actions (12 values): Actions from last step
+        - Current height (1 value): Height of base from ground
         
-        Total: 46 values
+        Total: 47 values
         
         Args:
             mjx_data: MJX simulation data
             prev_action: Previous action applied
         
         Returns:
-            obs: Observation array of shape (46,)
+            obs: Observation array of shape (47,)
         """
         # ====================================================================
         # EXTRACT JOINT POSITIONS
@@ -577,6 +578,12 @@ class SpiderEnv:
         body_linear_vel = mjx_data.qvel[0:3]   # Shape: (3,)
         
         # ====================================================================
+        # EXTRACT CURRENT HEIGHT
+        # ====================================================================
+        
+        current_height = mjx_data.qpos[2:3]  # Shape: (1,)
+        
+        # ====================================================================
         # CONCATENATE ALL OBSERVATIONS
         # ====================================================================
         
@@ -587,6 +594,7 @@ class SpiderEnv:
             body_angular_vel,    # 3 values
             body_linear_vel,     # 3 values
             prev_action,         # 12 values
+            current_height,      # 1 value
         ])
         
         # Safety: replace any NaN/Inf values with zeros
@@ -612,20 +620,21 @@ class SpiderEnv:
         action: jnp.ndarray
     ) -> jnp.ndarray:
         """
-        Compute the reward for the current state.
+        Compute the reward for the current state (STANDING task).
         
         Reward components:
-        1. Forward velocity reward: Encourages walking forward
-        2. Alive bonus: Small positive reward for not falling
-        3. Velocity tracking penalty: Penalizes deviation from target XY velocity
-        4. Yaw rate penalty: Penalizes deviation from target yaw rate
-        5. Base orientation penalty: Penalizes non-flat base
+        1. Height reward: Reward for being close to 10cm target height
+        2. Orientation reward: Reward for keeping base perpendicular to ground
+        3. Alive bonus: Small positive reward for not falling
+        4. Velocity penalty: Penalizes movement (should stay still)
+        5. Yaw rate penalty: Penalizes deviation from target yaw rate
         6. Motor effort penalty: Penalizes high motor effort
         7. Joint velocity change penalty: Penalizes rapid joint position changes
         8. Jerk penalty: Penalizes jerky movements (velocity acceleration)
-        9. Illegal contact penalty: Heavy penalty for non-foot ground contacts
-        10. kn_yaw angle reward: Rewards kn_yaw < 0.7 radians
-        11. sh_yaw angle reward: Rewards sh_yaw < 1.0 radians
+        9. sh_roll boundary penalty: Penalizes sh_roll outside bounds
+        10. sh_roll symmetry penalty: Penalizes asymmetric sh_roll
+        11. kn_yaw angle reward: Rewards kn_yaw < 0.7 radians
+        12. sh_yaw angle reward: Rewards sh_yaw < 1.0 radians
         
         Args:
             mjx_data: Current MJX simulation data
@@ -640,43 +649,22 @@ class SpiderEnv:
         delta_t = self.dt * self.action_repeat
         
         # ====================================================================
-        # 1. FORWARD VELOCITY REWARD
+        # 1. HEIGHT REWARD (primary reward for standing)
         # ====================================================================
         
-        current_x = mjx_data.qpos[0]
-        forward_velocity = (current_x - prev_pos[0]) / delta_t
-        forward_reward = self.forward_reward_weight * forward_velocity
+        # Current height of the base
+        current_height = mjx_data.qpos[2]
+        
+        # Compute distance from target height (10cm = 0.1m)
+        height_error = jnp.abs(current_height - self.target_height)
+        
+        # Reward is inversely proportional to distance from target
+        # Using exponential decay for smooth reward gradient
+        # max reward of 1.0 when exactly at target height
+        height_reward = self.height_reward_weight * jnp.exp(-10.0 * height_error)
         
         # ====================================================================
-        # 2. ALIVE BONUS
-        # ====================================================================
-        
-        alive_reward = self.alive_bonus
-        
-        # ====================================================================
-        # 3. VELOCITY TRACKING PENALTY (XY plane deviation)
-        # ====================================================================
-        
-        # Get current XY velocities from qvel
-        current_vel_x = mjx_data.qvel[0]
-        current_vel_y = mjx_data.qvel[1]
-        
-        # Compute deviation from target
-        vel_x_error = jnp.abs(current_vel_x - self.target_velocity_x)
-        vel_y_error = jnp.abs(current_vel_y - self.target_velocity_y)
-        velocity_tracking_penalty = -self.velocity_tracking_weight * (vel_x_error + vel_y_error)
-        
-        # ====================================================================
-        # 4. YAW RATE TRACKING PENALTY
-        # ====================================================================
-        
-        # Yaw rate is angular velocity around z-axis (qvel[5])
-        current_yaw_rate = mjx_data.qvel[5]
-        yaw_rate_error = jnp.abs(current_yaw_rate - self.target_yaw_rate)
-        yaw_rate_penalty = -self.yaw_rate_tracking_weight * yaw_rate_error
-        
-        # ====================================================================
-        # 5. BASE ORIENTATION PENALTY (non-flat base)
+        # 2. ORIENTATION REWARD (reward for being perpendicular to ground)
         # ====================================================================
         
         # Get quaternion [w, x, y, z] from qpos
@@ -697,19 +685,57 @@ class SpiderEnv:
             jnp.arcsin(sinp)
         )
         
-        # Penalty for any roll or pitch (should be flat, so both should be 0)
-        orientation_error = jnp.abs(roll) + jnp.abs(pitch)
-        base_orientation_penalty = -self.base_orientation_weight * orientation_error
+        # Compute total orientation deviation from perpendicular
+        # Perpendicular = roll and pitch both = 0
+        orientation_error = jnp.sqrt(roll**2 + pitch**2)
+        
+        # Reward for being close to perpendicular (exponential decay)
+        orientation_reward = self.orientation_reward_weight * jnp.exp(-5.0 * orientation_error)
         
         # ====================================================================
-        # 6. MOTOR EFFORT PENALTY (high torque usage)
+        # 3. ALIVE BONUS
+        # ====================================================================
+        
+        alive_reward = self.alive_bonus
+        
+        # ====================================================================
+        # 4. VELOCITY PENALTY (should stay still for standing)
+        # ====================================================================
+        
+        # Get current XY velocities from qvel (should be minimal for standing)
+        current_vel_x = mjx_data.qvel[0]
+        current_vel_y = mjx_data.qvel[1]
+        
+        # Penalize any horizontal movement (target velocity = 0 for standing)
+        velocity_penalty = -self.velocity_tracking_weight * (
+            jnp.abs(current_vel_x) + jnp.abs(current_vel_y)
+        )
+        
+        # ====================================================================
+        # 5. YAW RATE TRACKING PENALTY
+        # ====================================================================
+        
+        # Yaw rate is angular velocity around z-axis (qvel[5])
+        current_yaw_rate = mjx_data.qvel[5]
+        yaw_rate_penalty = -self.yaw_rate_tracking_weight * jnp.abs(current_yaw_rate)
+        
+        # ====================================================================
+        # 6. BASE ORIENTATION PENALTY (additional penalty for non-flat base)
+        # ====================================================================
+        
+        # Penalty for any roll or pitch (should be flat, so both should be 0)
+        orientation_error_penalty = jnp.abs(roll) + jnp.abs(pitch)
+        base_orientation_penalty = -self.base_orientation_weight * orientation_error_penalty
+        
+        # ====================================================================
+        # 7. MOTOR EFFORT PENALTY (high torque usage)
         # ====================================================================
         
         # Penalize squared control inputs (proportional to torque)
         motor_effort_penalty = -self.motor_effort_weight * jnp.sum(jnp.square(action))
         
         # ====================================================================
-        # 7. JOINT VELOCITY CHANGE PENALTY (rapid changes in joint positions)
+        # 8. JOINT VELOCITY CHANGE PENALTY (rapid changes in joint positions)
         # ====================================================================
         
         # Current joint positions
@@ -722,7 +748,7 @@ class SpiderEnv:
         joint_velocity_change_penalty = -self.joint_velocity_change_weight * jnp.sum(jnp.square(joint_pos_change))
         
         # ====================================================================
-        # 8. JERK PENALTY (jerky movements - change in velocity)
+        # 9. JERK PENALTY (jerky movements - change in velocity)
         # ====================================================================
         
         # Current joint velocities
@@ -735,14 +761,7 @@ class SpiderEnv:
         jerk_penalty = -self.jerk_weight * jnp.sum(jnp.square(joint_vel_change))
         
         # ====================================================================
-        # 9. ILLEGAL CONTACT PENALTY
-        # ====================================================================
-        
-        # Check for contacts between non-foot parts and ground
-        # In MJX, illegal contacts are now handled by termination, not penalty
-        
-        # ====================================================================
-        # 9. SH_ROLL BOUNDARY PENALTY (penalize outside [-1.26, 1.26])
+        # 10. SH_ROLL BOUNDARY PENALTY (penalize outside [-1.26, 1.26])
         # ====================================================================
         
         sh_roll_positions = mjx_data.qpos[self.sh_roll_indices]
@@ -757,7 +776,7 @@ class SpiderEnv:
         )
         
         # ====================================================================
-        # 10. SH_ROLL SYMMETRY PENALTY
+        # 11. SH_ROLL SYMMETRY PENALTY
         # ====================================================================
         
         # sh_roll pairs should be symmetric (opposite legs move together)
@@ -776,7 +795,7 @@ class SpiderEnv:
         )
         
         # ====================================================================
-        # 11. KN_YAW ANGLE REWARD (reward for angles < 0.7 radians)
+        # 12. KN_YAW ANGLE REWARD (reward for angles < 0.7 radians)
         # ====================================================================
         
         # Get kn_yaw joint positions (absolute values)
@@ -789,7 +808,7 @@ class SpiderEnv:
         kn_yaw_reward = self.kn_yaw_angle_reward_weight * jnp.sum(kn_yaw_below_threshold)
         
         # ====================================================================
-        # 12. SH_YAW ANGLE REWARD (reward for angles < 1.0 radians)
+        # 13. SH_YAW ANGLE REWARD (reward for angles < 1.0 radians)
         # ====================================================================
         
         # Get sh_yaw joint positions (absolute values)
@@ -805,9 +824,10 @@ class SpiderEnv:
         # ====================================================================
         
         total_reward = (
-            forward_reward +
+            height_reward +               # Primary: keep at 10cm height
+            orientation_reward +          # Primary: stay perpendicular
             alive_reward +
-            velocity_tracking_penalty +
+            velocity_penalty +            # Penalize movement
             yaw_rate_penalty +
             base_orientation_penalty +
             motor_effort_penalty +
@@ -884,8 +904,8 @@ class SpiderEnv:
         # Total violations
         total_violations = body_too_low + upper_leg_violations + mid_leg_violations
         
-        # Apply heavy penalty
-        penalty = -self.illegal_contact_weight * total_violations
+        # Apply heavy penalty (using a default weight since illegal_contact_weight is not defined)
+        penalty = -10.0 * total_violations
         
         return penalty
     
@@ -927,7 +947,7 @@ class SpiderEnv:
         # ====================================================================
         
         body_height = mjx_data.qpos[2]
-        too_low = body_height < 0.05  # Less than 5cm from ground
+        too_low = body_height < 0.03  # Less than 3cm from ground (stricter for standing)
         
         # ====================================================================
         # CHECK ILLEGAL BODY CONTACT
@@ -978,7 +998,7 @@ class SpiderEnv:
 # VECTORIZED ENVIRONMENT WRAPPER
 # ============================================================================
 
-class VecSpiderEnv:
+class VecSpiderStandEnv:
     """
     Vectorized environment wrapper for parallel simulation.
     
@@ -986,12 +1006,12 @@ class VecSpiderEnv:
     using JAX's vmap, which is essential for efficient PPO training.
     """
     
-    def __init__(self, env: SpiderEnv, num_envs: int):
+    def __init__(self, env: SpiderStandEnv, num_envs: int):
         """
         Initialize vectorized environment.
         
         Args:
-            env: Base SpiderEnv instance
+            env: Base SpiderStandEnv instance
             num_envs: Number of parallel environments
         """
         self.env = env
@@ -1046,11 +1066,11 @@ if __name__ == "__main__":
     Test the environment to verify it works correctly.
     """
     print("=" * 60)
-    print("Testing SpiderEnv with New Reward Functions")
+    print("Testing SpiderStandEnv (Standing Environment)")
     print("=" * 60)
     
     # Create environment
-    env = SpiderEnv()
+    env = SpiderStandEnv()
     
     # Initialize random key
     rng = random.PRNGKey(0)
@@ -1061,6 +1081,7 @@ if __name__ == "__main__":
     obs, state = env.reset(key)
     print(f"Initial observation shape: {obs.shape}")
     print(f"Expected observation size: {env.obs_size}")
+    print(f"Target height: {env.target_height}m")
     
     # Test step with random actions
     print("\nTesting step with random actions...")
@@ -1068,8 +1089,9 @@ if __name__ == "__main__":
         rng, key = random.split(rng)
         action = random.uniform(key, (env.action_size,), minval=-1.0, maxval=1.0)
         obs, state, reward, info = env.step(state, action)
-        print(f"Step {i+1}: reward = {float(reward):.4f}")
+        height = float(state.mjx_data.qpos[2])
+        print(f"Step {i+1}: reward = {float(reward):.4f}, height = {height:.4f}m, height_error = {float(info['height_from_target']):.4f}")
     
     print("\n" + "=" * 60)
-    print("Environment test completed successfully!")
+    print("Standing environment test completed successfully!")
     print("=" * 60)

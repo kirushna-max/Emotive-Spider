@@ -32,8 +32,10 @@ import flax.linen as nn
 from flax.linen.initializers import constant, orthogonal
 import optax
 import numpy as np
+import matplotlib.pyplot as plt
 
 from env import SpiderEnv, VecSpiderEnv, EnvState
+from env_stand import SpiderStandEnv, VecSpiderStandEnv
 
 
 # ============================================================================
@@ -322,9 +324,8 @@ def ppo_loss(
     # SAFETY: Clip policy loss to prevent explosion
     policy_loss = jnp.clip(policy_loss, -100.0, 100.0)
     
-    # Value function loss with clipping
+    # Value function loss (no clipping to see actual values)
     value_loss = jnp.mean(jnp.square(values - returns))
-    value_loss = jnp.clip(value_loss, 0.0, 10000.0)
     
     # Entropy bonus (encourage exploration)
     entropy = 0.5 * jnp.sum(1 + 2 * action_log_std + jnp.log(2 * jnp.pi))
@@ -357,7 +358,7 @@ def train(
     num_updates: int = 1000,
     num_epochs: int = 4,
     minibatch_size: int = 256,
-    learning_rate: float = 3e-4,
+    learning_rate: float = 1e-4,  # Reduced from 3e-4 to prevent gradient explosion
     gamma: float = 0.99,
     gae_lambda: float = 0.95,
     clip_eps: float = 0.2,
@@ -366,9 +367,11 @@ def train(
     max_grad_norm: float = 0.5,
     seed: int = 0,
     checkpoint_dir: str = "checkpoints",
-    checkpoint_freq: int = 50,
+    checkpoint_freq: int = 10,
+    show_plot: bool = True,
     test_mode: bool = False,
     resume_checkpoint: str = None,
+    mode: str = "walk",  # "walk" or "stand"
 ):
     """
     Main PPO training function.
@@ -393,8 +396,12 @@ def train(
         resume_checkpoint: Path to checkpoint file to resume from
     """
     print("=" * 60)
-    print("PPO TRAINING FOR EMOTIVE-SPIDER")
+    print(f"PPO TRAINING FOR EMOTIVE-SPIDER ({mode.upper()} MODE)")
     print("=" * 60)
+    
+    # Validate mode
+    if mode not in ["walk", "stand"]:
+        raise ValueError(f"Invalid mode: {mode}. Must be 'walk' or 'stand'")
     
     if test_mode:
         num_updates = 10
@@ -410,10 +417,14 @@ def train(
     # Initialize random key
     rng = random.PRNGKey(seed)
     
-    # Create environment
-    print("\nInitializing environment...")
-    base_env = SpiderEnv()
-    vec_env = VecSpiderEnv(base_env, num_envs)
+    # Create environment based on mode
+    print(f"\nInitializing {mode} environment...")
+    if mode == "walk":
+        base_env = SpiderEnv()
+        vec_env = VecSpiderEnv(base_env, num_envs)
+    else:  # mode == "stand"
+        base_env = SpiderStandEnv()
+        vec_env = VecSpiderStandEnv(base_env, num_envs)
     
     # Create network
     print("Creating neural network...")
@@ -492,6 +503,40 @@ def train(
     if resume_checkpoint is None:
         total_episodes = 0
         total_rewards = []
+    
+    # Initialize plotting data
+    plot_rewards = []
+    plot_policy_loss = []
+    plot_value_loss = []
+    
+    # Setup live plotting
+    if show_plot:
+        plt.ion()  # Enable interactive mode
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+        fig.suptitle(f'Emotive-Spider Training Progress ({mode.upper()} mode)')
+        
+        # Initialize empty lines for each subplot
+        line_reward, = axes[0].plot([], [], 'b-', linewidth=1.5)
+        axes[0].set_xlabel('Update')
+        axes[0].set_ylabel('Mean Reward')
+        axes[0].set_title('Reward per Update')
+        axes[0].grid(True, alpha=0.3)
+        
+        line_policy, = axes[1].plot([], [], 'g-', linewidth=1.5)
+        axes[1].set_xlabel('Update')
+        axes[1].set_ylabel('Policy Loss')
+        axes[1].set_title('Policy Loss')
+        axes[1].grid(True, alpha=0.3)
+        
+        line_value, = axes[2].plot([], [], 'r-', linewidth=1.5)
+        axes[2].set_xlabel('Update')
+        axes[2].set_ylabel('Value Loss')
+        axes[2].set_title('Value Loss')
+        axes[2].grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.show(block=False)
+        plt.pause(0.1)
     
     for update in range(start_update, num_updates):
         update_start = time.time()
@@ -608,7 +653,7 @@ def train(
         mean_reward = float(jnp.mean(rollout_rewards))
         total_rewards.append(mean_reward)
         
-        if (update + 1) % 10 == 0 or update == 0:
+        if True:  # Print every update
             avg_metrics = {k: np.mean([m[k] for m in all_metrics]) for k in all_metrics[0]}
             print(f"Update {update + 1}/{num_updates} | "
                   f"Reward: {mean_reward:.4f} | "
@@ -616,6 +661,34 @@ def train(
                   f"Value Loss: {avg_metrics['value_loss']:.4f} | "
                   f"Episodes: {total_episodes} | "
                   f"Time: {update_time:.2f}s")
+            
+            # Update plot data
+            plot_rewards.append(mean_reward)
+            plot_policy_loss.append(float(avg_metrics['policy_loss']))
+            plot_value_loss.append(float(avg_metrics['value_loss']))
+            
+            # Update live plot
+            if show_plot and (update + 1) % 1 == 0:  # Update plot every update
+                x_data = list(range(1, len(plot_rewards) + 1))
+                
+                # Update reward plot
+                line_reward.set_data(x_data, plot_rewards)
+                axes[0].relim()
+                axes[0].autoscale_view()
+                
+                # Update policy loss plot
+                line_policy.set_data(x_data, plot_policy_loss)
+                axes[1].relim()
+                axes[1].autoscale_view()
+                
+                # Update value loss plot  
+                line_value.set_data(x_data, plot_value_loss)
+                axes[2].relim()
+                axes[2].autoscale_view()
+                
+                fig.canvas.draw()
+                fig.canvas.flush_events()
+                plt.pause(0.01)
         
         # ====================================================================
         # CHECKPOINTING
@@ -667,6 +740,14 @@ def train(
             'rewards': total_rewards,
         }, f)
     print(f"Saved final model to {final_path}")
+    
+    # Save final plot
+    if show_plot:
+        plot_path = os.path.join(checkpoint_dir, "training_progress.png")
+        fig.savefig(plot_path, dpi=150, bbox_inches='tight')
+        print(f"Saved training plot to {plot_path}")
+        plt.ioff()
+        plt.show()  # Keep plot open at end
 
 
 # ============================================================================
@@ -675,6 +756,8 @@ def train(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Emotive-Spider with PPO")
+    parser.add_argument("--mode", type=str, default="walk", choices=["walk", "stand"],
+                        help="Training mode: 'walk' for walking, 'stand' for standing")
     parser.add_argument("--test-mode", action="store_true", 
                         help="Run in test mode (10 iterations)")
     parser.add_argument("--num-envs", type=int, default=64,
@@ -687,12 +770,21 @@ if __name__ == "__main__":
                         help="Learning rate")
     parser.add_argument("--seed", type=int, default=0,
                         help="Random seed")
-    parser.add_argument("--checkpoint-dir", type=str, default="checkpoints",
-                        help="Directory for checkpoints")
+    parser.add_argument("--checkpoint-dir", type=str, default=None,
+                        help="Directory for checkpoints (default: checkpoints_walk or checkpoints_stand)")
+    parser.add_argument("--checkpoint-freq", type=int, default=10,
+                        help="Checkpoint frequency (updates)")
+    parser.add_argument("--no-plot", action="store_true",
+                        help="Disable live plotting")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to checkpoint file to resume training from")
     
     args = parser.parse_args()
+    
+    # Set default checkpoint directory based on mode if not specified
+    checkpoint_dir = args.checkpoint_dir
+    if checkpoint_dir is None:
+        checkpoint_dir = f"checkpoints_{args.mode}"
     
     train(
         num_envs=args.num_envs,
@@ -700,7 +792,10 @@ if __name__ == "__main__":
         num_updates=args.num_updates,
         learning_rate=args.learning_rate,
         seed=args.seed,
-        checkpoint_dir=args.checkpoint_dir,
+        checkpoint_dir=checkpoint_dir,
+        checkpoint_freq=args.checkpoint_freq,
+        show_plot=not args.no_plot,
         test_mode=args.test_mode,
         resume_checkpoint=args.resume,
+        mode=args.mode,
     )
