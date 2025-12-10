@@ -1,20 +1,25 @@
 """
 ============================================================================
-PPO Training Script for Emotive-Spider Robot
+PPO Training Script for Emotive-Spider Robot (Curriculum Learning)
 ============================================================================
 This script implements Proximal Policy Optimization (PPO) to train the
-spider robot to walk using MuJoCo MJX for accelerated physics simulation.
+spider robot using curriculum learning with MuJoCo MJX.
+
+Curriculum Learning Stages:
+- Stage 1: Learn to STAND (balance at 10cm height)
+- Stage 2: Learn to WALK (uses weights from Stage 1)
 
 Key Features:
 - PPO with Generalized Advantage Estimation (GAE)
 - Vectorized environments for parallel rollouts
+- Curriculum learning with automatic stage transitions
 - Checkpointing for saving/resuming training
-- Training metrics logging
 
 Usage:
-    python train.py                    # Standard training
-    python train.py --test-mode        # Quick test (10 iterations)
-    python train.py --resume checkpoint.pkl  # Resume from checkpoint
+    python train.py --stage 1              # Train standing (Stage 1)
+    python train.py --stage 2              # Train walking (auto-loads Stage 1 weights)
+    python train.py --stage 1 --test-mode  # Quick test
+    python train.py --resume checkpoint.pkl  # Resume from specific checkpoint
 ============================================================================
 """
 
@@ -353,17 +358,17 @@ def ppo_loss(
 # ============================================================================
 
 def train(
-    num_envs: int = 64,
-    num_steps: int = 256,
+    num_envs: int = 512,
+    num_steps: int = 1024,
     num_updates: int = 1000,
     num_epochs: int = 4,
     minibatch_size: int = 256,
-    learning_rate: float = 1e-4,  # Reduced from 3e-4 to prevent gradient explosion
+    learning_rate: float = 3e-4,  # Reduced from 3e-4 to prevent gradient explosion
     gamma: float = 0.99,
     gae_lambda: float = 0.95,
     clip_eps: float = 0.2,
     vf_coef: float = 0.5,
-    ent_coef: float = 0.01,
+    ent_coef: float = 0.02,
     max_grad_norm: float = 0.5,
     seed: int = 0,
     checkpoint_dir: str = "checkpoints",
@@ -371,7 +376,7 @@ def train(
     show_plot: bool = True,
     test_mode: bool = False,
     resume_checkpoint: str = None,
-    mode: str = "walk",  # "walk" or "stand"
+    stage: int = 1,  # Curriculum stage: 1 = stand, 2 = walk
 ):
     """
     Main PPO training function.
@@ -394,14 +399,20 @@ def train(
         checkpoint_freq: Checkpoint frequency
         test_mode: If True, run only 10 iterations
         resume_checkpoint: Path to checkpoint file to resume from
+        stage: Curriculum learning stage (1=stand, 2=walk)
     """
+    # Stage descriptions
+    stage_names = {1: "STAND", 2: "WALK"}
+    stage_name = stage_names.get(stage, f"STAGE {stage}")
+    
     print("=" * 60)
-    print(f"PPO TRAINING FOR EMOTIVE-SPIDER ({mode.upper()} MODE)")
+    print(f"PPO TRAINING FOR EMOTIVE-SPIDER")
+    print(f"CURRICULUM STAGE {stage}: {stage_name}")
     print("=" * 60)
     
-    # Validate mode
-    if mode not in ["walk", "stand"]:
-        raise ValueError(f"Invalid mode: {mode}. Must be 'walk' or 'stand'")
+    # Validate stage
+    if stage not in [1, 2]:
+        raise ValueError(f"Invalid stage: {stage}. Must be 1 (stand) or 2 (walk)")
     
     if test_mode:
         num_updates = 10
@@ -417,14 +428,14 @@ def train(
     # Initialize random key
     rng = random.PRNGKey(seed)
     
-    # Create environment based on mode
-    print(f"\nInitializing {mode} environment...")
-    if mode == "walk":
-        base_env = SpiderEnv()
-        vec_env = VecSpiderEnv(base_env, num_envs)
-    else:  # mode == "stand"
+    # Create environment based on curriculum stage
+    print(f"\nInitializing Stage {stage} ({stage_name}) environment...")
+    if stage == 1:  # Stand
         base_env = SpiderStandEnv()
         vec_env = VecSpiderStandEnv(base_env, num_envs)
+    else:  # stage == 2: Walk
+        base_env = SpiderEnv()
+        vec_env = VecSpiderEnv(base_env, num_envs)
     
     # Create network
     print("Creating neural network...")
@@ -442,7 +453,9 @@ def train(
     )
     opt_state = optimizer.init(params)
     
-    # Resume from checkpoint if specified
+    # Resume logic:
+    # 1. If resume_checkpoint is specified, use that
+    # 2. If stage 2 and no resume specified, auto-load stage 1 final checkpoint
     start_update = 0
     total_episodes = 0
     total_rewards = []
@@ -457,6 +470,22 @@ def train(
         total_episodes = checkpoint.get('total_episodes', 0)
         total_rewards = checkpoint.get('rewards', [])
         print(f"Resumed from update {start_update}, {total_episodes} episodes completed")
+    elif stage == 2:
+        # Auto-load Stage 1 final checkpoint for curriculum learning
+        stage1_checkpoint = os.path.join(checkpoint_dir, "stage1_final.pkl")
+        if os.path.exists(stage1_checkpoint):
+            print(f"\n[CURRICULUM] Loading Stage 1 weights from: {stage1_checkpoint}")
+            with open(stage1_checkpoint, 'rb') as f:
+                checkpoint = pickle.load(f)
+            params = checkpoint['params']
+            opt_state = optimizer.init(params)  # Re-init optimizer with loaded params
+            print(f"[CURRICULUM] Loaded Stage 1 model (trained for {checkpoint.get('update', '?')} updates)")
+            print(f"[CURRICULUM] Starting Stage 2 (walking) training from scratch with Stage 1 weights")
+            # Note: We reset update count and episodes for Stage 2
+        else:
+            print(f"\n[WARNING] Stage 1 checkpoint not found: {stage1_checkpoint}")
+            print(f"[WARNING] Training Stage 2 from random initialization.")
+            print(f"[WARNING] For curriculum learning, train Stage 1 first!")
     
     # ========================================================================
     # JIT COMPILE FUNCTIONS
@@ -513,7 +542,7 @@ def train(
     if show_plot:
         plt.ion()  # Enable interactive mode
         fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-        fig.suptitle(f'Emotive-Spider Training Progress ({mode.upper()} mode)')
+        fig.suptitle(f'Emotive-Spider Training - Stage {stage}: {stage_name}')
         
         # Initialize empty lines for each subplot
         line_reward, = axes[0].plot([], [], 'b-', linewidth=1.5)
@@ -695,7 +724,7 @@ def train(
         # ====================================================================
         
         if (update + 1) % checkpoint_freq == 0:
-            checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_{update + 1}.pkl")
+            checkpoint_path = os.path.join(checkpoint_dir, f"stage{stage}_checkpoint_{update + 1}.pkl")
             with open(checkpoint_path, 'wb') as f:
                 pickle.dump({
                     'params': jax.device_get(params),
@@ -703,11 +732,12 @@ def train(
                     'update': update + 1,
                     'total_episodes': total_episodes,
                     'rewards': total_rewards,
+                    'stage': stage,
                 }, f)
             print(f"Saved checkpoint to {checkpoint_path}")
             
-            # Also save latest
-            latest_path = os.path.join(checkpoint_dir, "latest.pkl")
+            # Also save stage-specific latest
+            latest_path = os.path.join(checkpoint_dir, f"stage{stage}_latest.pkl")
             with open(latest_path, 'wb') as f:
                 pickle.dump({
                     'params': jax.device_get(params),
@@ -715,6 +745,7 @@ def train(
                     'update': update + 1,
                     'total_episodes': total_episodes,
                     'rewards': total_rewards,
+                    'stage': stage,
                 }, f)
     
     # ========================================================================
@@ -723,14 +754,14 @@ def train(
     
     total_time = time.time() - start_time
     print("\n" + "=" * 60)
-    print("TRAINING COMPLETE!")
+    print(f"STAGE {stage} ({stage_name}) TRAINING COMPLETE!")
     print("=" * 60)
     print(f"Total time: {total_time:.2f}s")
     print(f"Total episodes: {total_episodes}")
     print(f"Final mean reward: {np.mean(total_rewards[-10:]):.4f}")
     
-    # Save final checkpoint
-    final_path = os.path.join(checkpoint_dir, "final.pkl")
+    # Save final checkpoint with stage prefix
+    final_path = os.path.join(checkpoint_dir, f"stage{stage}_final.pkl")
     with open(final_path, 'wb') as f:
         pickle.dump({
             'params': jax.device_get(params),
@@ -738,8 +769,16 @@ def train(
             'update': num_updates,
             'total_episodes': total_episodes,
             'rewards': total_rewards,
+            'stage': stage,
         }, f)
     print(f"Saved final model to {final_path}")
+    
+    # Print next steps for curriculum learning
+    if stage == 1:
+        print("\n" + "-" * 60)
+        print("NEXT STEP: Run Stage 2 to train walking")
+        print(f"  python train.py --stage 2")
+        print("-" * 60)
     
     # Save final plot
     if show_plot:
@@ -755,9 +794,9 @@ def train(
 # ============================================================================
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train Emotive-Spider with PPO")
-    parser.add_argument("--mode", type=str, default="walk", choices=["walk", "stand"],
-                        help="Training mode: 'walk' for walking, 'stand' for standing")
+    parser = argparse.ArgumentParser(description="Train Emotive-Spider with PPO (Curriculum Learning)")
+    parser.add_argument("--stage", type=int, default=1, choices=[1, 2],
+                        help="Curriculum stage: 1=stand (learn balance), 2=walk (uses Stage 1 weights)")
     parser.add_argument("--test-mode", action="store_true", 
                         help="Run in test mode (10 iterations)")
     parser.add_argument("--num-envs", type=int, default=64,
@@ -770,8 +809,8 @@ if __name__ == "__main__":
                         help="Learning rate")
     parser.add_argument("--seed", type=int, default=0,
                         help="Random seed")
-    parser.add_argument("--checkpoint-dir", type=str, default=None,
-                        help="Directory for checkpoints (default: checkpoints_walk or checkpoints_stand)")
+    parser.add_argument("--checkpoint-dir", type=str, default="checkpoints",
+                        help="Directory for checkpoints (shared across stages)")
     parser.add_argument("--checkpoint-freq", type=int, default=10,
                         help="Checkpoint frequency (updates)")
     parser.add_argument("--no-plot", action="store_true",
@@ -781,21 +820,16 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    # Set default checkpoint directory based on mode if not specified
-    checkpoint_dir = args.checkpoint_dir
-    if checkpoint_dir is None:
-        checkpoint_dir = f"checkpoints_{args.mode}"
-    
     train(
         num_envs=args.num_envs,
         num_steps=args.num_steps,
         num_updates=args.num_updates,
         learning_rate=args.learning_rate,
         seed=args.seed,
-        checkpoint_dir=checkpoint_dir,
+        checkpoint_dir=args.checkpoint_dir,
         checkpoint_freq=args.checkpoint_freq,
         show_plot=not args.no_plot,
         test_mode=args.test_mode,
         resume_checkpoint=args.resume,
-        mode=args.mode,
+        stage=args.stage,
     )
